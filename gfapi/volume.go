@@ -11,6 +11,7 @@ package gfapi
 // #cgo pkg-config: glusterfs-api
 // #include "glusterfs/api/glfs.h"
 // #include <stdlib.h>
+// #include <time.h>
 // #include <sys/stat.h>
 import "C"
 import (
@@ -19,6 +20,7 @@ import (
 	"os"
 	"path"
 	"syscall"
+	"time"
 	"unsafe"
 )
 
@@ -33,6 +35,12 @@ type Volume struct {
 //
 // Limitations:
 // * Assumes tcp transport and glusterd is listening on 24007
+//
+// glfs_t *glfs_new(const char *volname)
+// __THROW GFAPI_PUBLIC(glfs_new, 3.4.0);
+//
+// int glfs_set_volfile_server(glfs_t *fs, const char *transport, const char *host, int port)
+// __THROW GFAPI_PUBLIC(glfs_set_volfile_server, 3.4.0);
 func (v *Volume) Init(volname string, hosts ...string) error {
 	cvolname := C.CString(volname)
 	ctrans := C.CString("tcp")
@@ -64,7 +72,13 @@ func (v *Volume) Init(volname string, hosts ...string) error {
 //
 // volfile is the path to the locally available volfile
 //
-// Return value is 0 for success and non 0 for failure
+// # Return value is 0 for success and non 0 for failure
+//
+// glfs_t *glfs_new(const char *volname)
+// __THROW GFAPI_PUBLIC(glfs_new, 3.4.0);
+//
+// int glfs_set_volfile(glfs_t *fs, const char *volfile)
+// __THROW GFAPI_PUBLIC(glfs_set_volfile, 3.4.0);
 func (v *Volume) InitWithVolfile(volname, volfile string) int {
 	cvolname := C.CString(volname)
 	cvolfile := C.CString(volfile)
@@ -81,12 +95,15 @@ func (v *Volume) InitWithVolfile(volname, volfile string) int {
 // Mount establishes a 'virtual mount.' Mount must be called after Init and
 // before storage operations. Steps taken:
 //
-//  - Spawn a poll-loop thread.
-//  - Establish connection to management daemon (volfile server) and receive volume specification (volfile).
-//  - Construct translator graph and initialize graph.
-//  - Wait for initialization (connecting to all bricks) to complete.
+//   - Spawn a poll-loop thread.
+//   - Establish connection to management daemon (volfile server) and receive volume specification (volfile).
+//   - Construct translator graph and initialize graph.
+//   - Wait for initialization (connecting to all bricks) to complete.
 //
 // Source: glfs.h
+//
+// int glfs_init(glfs_t *fs)
+// __THROW GFAPI_PUBLIC(glfs_init, 3.4.0);
 func (v *Volume) Mount() error {
 
 	ret, err := C.glfs_init(v.fs)
@@ -117,6 +134,9 @@ const (
 // SetLogging sets the gfapi log file path and LogLevel. The Volume must be
 // initialized before calling. An empty string "" is passed as 'name'
 // sets the default log directory (/var/log/glusterfs).
+//
+// int glfs_set_logging(glfs_t *fs, const char *logfile, int loglevel)
+// __THROW GFAPI_PUBLIC(glfs_set_logging, 3.4.0);
 func (v *Volume) SetLogging(name string, logLevel LogLevel) error {
 
 	if name == "" {
@@ -143,6 +163,9 @@ func (v *Volume) SetLogging(name string, logLevel LogLevel) error {
 }
 
 // Unmount ends the virtual mount.
+//
+// int glfs_fini(glfs_t *fs)
+// __THROW GFAPI_PUBLIC(glfs_fini, 3.4.0);
 func (v *Volume) Unmount() error {
 	ret, err := C.glfs_fini(v.fs)
 	if int(ret) < 0 {
@@ -153,12 +176,49 @@ func (v *Volume) Unmount() error {
 
 // Chmod changes the mode of the named file to given mode
 //
-// Returns an error on failure
+// # Returns an error on failure
+//
+// int glfs_chmod(glfs_t *fs, const char *path, mode_t mode)
+// __THROW GFAPI_PUBLIC(glfs_chmod, 3.4.0);
 func (v *Volume) Chmod(name string, mode os.FileMode) error {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 
 	_, err := C.glfs_chmod(v.fs, cname, C.mode_t(posixMode(mode)))
+
+	return err
+}
+
+// Chmod changes the uid, gid of the named file
+//
+// # Returns an error on failure
+//
+// int glfs_chown(glfs_t *fs, const char *path, uid_t uid, gid_t gid)
+// __THROW GFAPI_PUBLIC(glfs_chown, 3.4.0);
+func (v *Volume) Chown(name string, uid, gid int) error {
+	cname := C.CString(name)
+	defer C.free(unsafe.Pointer(cname))
+
+	_, err := C.glfs_chown(v.fs, cname, C.uid_t(uid), C.gid_t(gid))
+
+	return err
+}
+
+// Chmod changes the mtime of the named file
+//
+// # Returns an error on failure
+//
+// int glfs_utimens(glfs_t *fs, const char *path, const struct timespec times[2])
+// __THROW GFAPI_PUBLIC(glfs_utimens, 3.4.0);
+func (v *Volume) Chtimes(name string, atime, mtime time.Time) error {
+	cname := C.CString(name)
+	defer C.free(unsafe.Pointer(cname))
+
+	var amtime [2]C.struct_timespec
+	amtime[0] = C.struct_timespec{tv_sec: C.long(atime.Unix()), tv_nsec: C.long(atime.Nanosecond())}
+	amtime[1] = C.struct_timespec{tv_sec: C.long(mtime.Unix()), tv_nsec: C.long(mtime.Nanosecond())}
+
+	_, err := C.glfs_utimens(v.fs, cname, &amtime[0])
 
 	return err
 }
@@ -170,6 +230,9 @@ func (v *Volume) Chmod(name string, mode os.FileMode) error {
 // name is the name of the file to be create.
 //
 // Returns a File object on success and a os.PathError on failure.
+//
+// fd_t *glfs_creat(glfs_t *fs, const char *path, int flags, mode_t mode)
+// __THROW GFAPI_PUBLIC(glfs_creat, 3.4.0);
 func (v *Volume) Create(name string) (*File, error) {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
@@ -184,8 +247,10 @@ func (v *Volume) Create(name string) (*File, error) {
 }
 
 // Unlink attempts to unlink a file a path and returns a non-nil error on failure.
+//
+// int glfs_unlink(glfs_t *fs, const char *path)
+// __THROW GFAPI_PUBLIC(glfs_unlink, 3.4.0);
 func (v *Volume) Unlink(path string) error {
-
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))
 
@@ -198,7 +263,10 @@ func (v *Volume) Unlink(path string) error {
 
 // Lstat returns an os.FileInfo object describing the named file. It doesn't follow the link if the file is a symlink.
 //
-// Returns an error on failure
+// # Returns an error on failure
+//
+// int glfs_lstat(glfs_t *fs, const char *path, struct stat *buf)
+// __THROW GFAPI_PUBLIC(glfs_lstat, 3.4.0);
 func (v *Volume) Lstat(name string) (os.FileInfo, error) {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
@@ -213,7 +281,10 @@ func (v *Volume) Lstat(name string) (os.FileInfo, error) {
 
 // Mkdir creates a new directory with given name and permission bits
 //
-// Returns an error on failure
+// # Returns an error on failure
+//
+// int glfs_mkdir(glfs_t *fs, const char *path, mode_t mode)
+// __THROW GFAPI_PUBLIC(glfs_mkdir, 3.4.0);
 func (v *Volume) Mkdir(name string, perm os.FileMode) error {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
@@ -228,9 +299,11 @@ func (v *Volume) Mkdir(name string, perm os.FileMode) error {
 
 // Removes an existing directory
 //
-// Returns error on failure
+// # Returns error on failure
+//
+// int glfs_rmdir(glfs_t *fs, const char *path)
+// __THROW GFAPI_PUBLIC(glfs_rmdir, 3.4.0);
 func (v *Volume) Rmdir(path string) error {
-
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))
 
@@ -299,6 +372,9 @@ func (v *Volume) MkdirAll(path string, perm os.FileMode) error {
 // name is the name of the file to be open.
 //
 // Returns a File object on success and a os.PathError on failure.
+//
+// glfs_fd_t *glfs_open(glfs_t *fs, const char *path, int flags)
+// __THROW GFAPI_PUBLIC(glfs_open, 3.4.0);
 func (v *Volume) Open(name string) (*File, error) {
 	isDir := false
 
@@ -332,6 +408,15 @@ func (v *Volume) Open(name string) (*File, error) {
 //
 // BUG : perm is not used for opening the file.
 // NOTE: It is better to use Open, Create etc. instead of using OpenFile directly
+//
+// fd_t *glfs_creat(glfs_t *fs, const char *path, int flags, mode_t mode)
+// __THROW GFAPI_PUBLIC(glfs_creat, 3.4.0);
+//
+// glfs_fd_t *glfs_open(glfs_t *fs, const char *path, int flags)
+// __THROW GFAPI_PUBLIC(glfs_open, 3.4.0);
+//
+// glfs_fd_t *glfs_opendir(glfs_t *fs, const char *path)
+// __THROW GFAPI_PUBLIC(glfs_opendir, 3.4.0);
 func (v *Volume) OpenFile(name string, flags int, perm os.FileMode) (*File, error) {
 	isDir := false
 
@@ -361,7 +446,10 @@ func (v *Volume) OpenFile(name string, flags int, perm os.FileMode) (*File, erro
 
 // Stat returns an os.FileInfo object describing the named file
 //
-// Returns an error on failure
+// # Returns an error on failure
+//
+// int glfs_fsetattr(struct glfs_fd *glfd, struct glfs_stat *stat)
+// __THROW GFAPI_PUBLIC(glfs_fsetattr, 6.0);
 func (v *Volume) Stat(name string) (os.FileInfo, error) {
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
@@ -376,11 +464,15 @@ func (v *Volume) Stat(name string) (os.FileInfo, error) {
 
 // Truncate changes the size of the named file
 //
-// Returns an error on failure
+// # Returns an error on failure
 //
 // TODO: gfapi currently (20131120) has not implement glfs_truncate.
-//       Once it has been implemented, renable the commented out code
-//       or write own function to implement the functionality of glfs_truncate
+//
+//	Once it has been implemented, renable the commented out code
+//	or write own function to implement the functionality of glfs_truncate
+//
+// int glfs_truncate(glfs_t *fs, const char *path, off_t length)
+// __THROW GFAPI_PUBLIC(glfs_truncate, 3.7.15);
 func (v *Volume) Truncate(name string, size int64) error {
 	// cname := C.CString(name)
 	// defer C.free(unsafe.Pointer(cname))
@@ -393,9 +485,11 @@ func (v *Volume) Truncate(name string, size int64) error {
 
 // Rename a file or directory
 //
-// Returns error on failure
+// # Returns error on failure
+//
+// int glfs_rename(glfs_t *fs, const char *oldpath, const char *newpath)
+// __THROW GFAPI_PUBLIC(glfs_rename, 3.4.0);
 func (v *Volume) Rename(oldpath string, newpath string) error {
-
 	coldpath := C.CString(oldpath)
 	defer C.free(unsafe.Pointer(coldpath))
 
@@ -412,6 +506,9 @@ func (v *Volume) Rename(oldpath string, newpath string) error {
 // Get value of the extended attribute 'attr' and place it in 'dest'
 //
 // Returns number of bytes placed in 'dest' and error if any
+//
+// ssize_t glfs_getxattr(glfs_t *fs, const char *path, const char *name, void *value, size_t size)
+// __THROW GFAPI_PUBLIC(glfs_getxattr, 3.4.0);
 func (v *Volume) Getxattr(path string, attr string, dest []byte) (int64, error) {
 	var ret C.ssize_t
 	var err error
@@ -438,7 +535,10 @@ func (v *Volume) Getxattr(path string, attr string, dest []byte) (int64, error) 
 
 // Set extended attribute with key 'attr' and value 'data'
 //
-// Returns error on failure
+// # Returns error on failure
+//
+// int glfs_setxattr(glfs_t *fs, const char *path, const char *name, const void *value, size_t size, int flags)
+// __THROW GFAPI_PUBLIC(glfs_setxattr, 3.4.0);
 func (v *Volume) Setxattr(path string, attr string, data []byte, flags int) error {
 
 	cpath := C.CString(path)
@@ -459,9 +559,11 @@ func (v *Volume) Setxattr(path string, attr string, data []byte, flags int) erro
 
 // Remove extended attribute named 'attr'
 //
-// Returns error on failure
+// # Returns error on failure
+//
+// int glfs_removexattr(glfs_t *fs, const char *path, const char *name)
+// __THROW GFAPI_PUBLIC(glfs_removexattr, 3.4.0);
 func (v *Volume) Removexattr(path string, attr string) error {
-
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))
 
@@ -478,14 +580,16 @@ func (v *Volume) Removexattr(path string, attr string) error {
 
 // Get filesystem statistics
 //
-// Returns an error on failure
+// # Returns an error on failure
+//
+// int glfs_statvfs(glfs_t *fs, const char *path, struct statvfs *buf)
+// __THROW GFAPI_PUBLIC(glfs_statvfs, 3.4.0);
 func (v *Volume) Statvfs(path string, buf *Statvfs_t) error {
 
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))
 
-	ret, err := C.glfs_statvfs(v.fs, cpath,
-		(*C.struct_statvfs)(unsafe.Pointer(buf)))
+	ret, err := C.glfs_statvfs(v.fs, cpath, (*C.struct_statvfs)(unsafe.Pointer(buf)))
 
 	if ret == 0 {
 		err = nil
