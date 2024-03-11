@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"syscall"
+	"time"
 )
 
 // File is the gluster file object.
@@ -25,6 +26,9 @@ type File struct {
 // Close is similar to os.Close in its functioning.
 //
 // Returns an Error on failure.
+//
+// int glfs_closedir(glfs_fd_t *fd)
+// __THROW GFAPI_PUBLIC(glfs_closedir, 3.4.0);
 func (f *File) Close() error {
 	var err error
 	var ret C.int
@@ -55,7 +59,14 @@ func (f *File) Chmod(mode os.FileMode) error {
 
 // Chown has not been implemented yet
 func (f *File) Chown(uid, gid int) error {
-	return errors.New("Chown has not been implemented yet")
+	return f.Fd.Fchown(uint32(uid), uint32(gid))
+}
+
+func (f *File) Futimens(atime, mtime time.Time) error {
+	var times *C.struct_timespec
+	times.tv_sec = C.long(mtime.Unix())
+	times.tv_nsec = C.long(mtime.Nanosecond())
+	return f.Fd.Futimens(times)
 }
 
 // Name returns the name of the opened file
@@ -83,8 +94,11 @@ func (f *File) Read(b []byte) (n int, err error) {
 // ReadAt reads atmost len(b) bytes into b starting from offset off
 //
 // Returns number of bytes read and an error if any
-func (f *File) ReadAt(b []byte, off int64) (int, error) {
-	return f.Fd.Pread(b, off)
+func (f *File) ReadAt(b []byte, off int64) (n int, err error) {
+	if n == 0 && len(b) > 0 && err == nil {
+		err = io.EOF
+	}
+	return
 }
 
 // Readdir returns the information of files in a directory.
