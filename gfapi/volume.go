@@ -382,13 +382,13 @@ func (v *Volume) MkdirAll(path string, perm os.FileMode) error {
 //
 // glfs_fd_t *glfs_open(glfs_t *fs, const char *path, int flags)
 // __THROW GFAPI_PUBLIC(glfs_open, 3.4.0);
-func (v *Volume) Open(name string) (*File, error) {
+func (v *Volume) Open(name string, flags int) (*File, error) {
 	isDir := false
 
 	cname := C.CString(name)
 	defer C.free(unsafe.Pointer(cname))
 
-	cfd, err := C.glfs_open(v.fs, cname, C.int(os.O_RDONLY))
+	cfd, err := C.glfs_open(v.fs, cname, C.int(flags))
 
 	// Try to reopen using glfs_opendir if the given path is a directory
 	if err == syscall.EISDIR {
@@ -584,7 +584,7 @@ func (v *Volume) Removexattr(path string, attr string) error {
 //
 // int glfs_statvfs(glfs_t *fs, const char *path, struct statvfs *buf)
 // __THROW GFAPI_PUBLIC(glfs_statvfs, 3.4.0);
-func (v *Volume) Statvfs(path string, buf *Statvfs_t) error {
+func (v *Volume) Statvfs(path string) (buf *Statvfs_t, err error) {
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))
 
@@ -593,7 +593,7 @@ func (v *Volume) Statvfs(path string, buf *Statvfs_t) error {
 	if ret == 0 {
 		err = nil
 	}
-	return err
+	return
 }
 
 // Access Check if you can read/write a file that already exists
