@@ -13,6 +13,7 @@ package gfapi
 // #include <stdlib.h>
 // #include <time.h>
 // #include <sys/stat.h>
+// #include <string.h>
 import "C"
 
 import (
@@ -22,6 +23,10 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+)
+
+const(
+	UnixMaxPathLen = 4096
 )
 
 //	Error codes of C (perror):
@@ -249,7 +254,7 @@ func (v *Volume) Create(name string, flags int, mode os.FileMode) (*File, error)
 	cfd, err := C.glfs_creat(v.fs, cname, C.int(flags), C.mode_t(posixMode(mode)))
 
 	if cfd == nil {
-		return nil, &os.PathError{"create", name, err}
+		return nil, &os.PathError{Op: "create", Path: name, Err: err}
 	}
 
 	return &File{name, Fd{cfd}, false}, nil
@@ -265,7 +270,7 @@ func (v *Volume) Unlink(path string) error {
 
 	ret, err := C.glfs_unlink(v.fs, cpath)
 	if int(ret) < 0 {
-		return &os.PathError{"unlink", path, err}
+		return &os.PathError{Op: "unlink", Path: path, Err: err}
 	}
 	return nil
 }
@@ -301,7 +306,7 @@ func (v *Volume) Mkdir(name string, perm os.FileMode) error {
 	ret, err := C.glfs_mkdir(v.fs, cname, C.mode_t(posixMode(perm)))
 
 	if ret != 0 {
-		return &os.PathError{"mkdir", name, err}
+		return &os.PathError{Op: "mkdir", Path: name, Err: err}
 	}
 	return nil
 }
@@ -319,7 +324,7 @@ func (v *Volume) Rmdir(path string) error {
 	ret, err := C.glfs_rmdir(v.fs, cpath)
 
 	if ret != 0 {
-		return &os.PathError{"rmdir", path, err}
+		return &os.PathError{Op: "rmdir", Path: path, Err: err}
 	}
 	return nil
 }
@@ -335,7 +340,7 @@ func (v *Volume) MkdirAll(path string, perm os.FileMode) error {
 		if dir.IsDir() {
 			return nil
 		}
-		return &os.PathError{"mkdir", path, syscall.ENOTDIR}
+		return &os.PathError{Op: "mkdir", Path: path, Err: syscall.ENOTDIR}
 	}
 
 	// Slow path: make sure parent exists and then call Mkdir for path.
@@ -397,7 +402,7 @@ func (v *Volume) Open(name string, flags int) (*File, error) {
 	}
 
 	if cfd == nil {
-		return nil, &os.PathError{"open", name, err}
+		return nil, &os.PathError{Op: "open", Path: name, Err: err}
 	}
 
 	return &File{name, Fd{cfd}, isDir}, nil
@@ -445,7 +450,10 @@ func (v *Volume) OpenFile(name string, flags int, perm os.FileMode) (*File, erro
 	}
 
 	if cfd == nil {
-		return nil, &os.PathError{"open", name, err}
+		if err == nil {
+			err = fmt.Errorf("failed to open file")
+		}
+		return nil, &os.PathError{Op: "open", Path: name, Err: err}
 	}
 
 	return &File{name, Fd{cfd}, isDir}, nil
@@ -511,27 +519,35 @@ func (v *Volume) Rename(oldpath string, newpath string) error {
 // ssize_t glfs_getxattr(glfs_t *fs, const char *path, const char *name, void *value, size_t size)
 // __THROW GFAPI_PUBLIC(glfs_getxattr, 3.4.0);
 func (v *Volume) Getxattr(path string, attr string, dest []byte) (int64, error) {
-	var ret C.ssize_t
-	var err error
-
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))
 
 	cattr := C.CString(attr)
 	defer C.free(unsafe.Pointer(cattr))
 
+	// First get the size needed
 	if len(dest) <= 0 {
-		ret, err = C.glfs_getxattr(v.fs, cpath, cattr, nil, 0)
-	} else {
-		ret, err = C.glfs_getxattr(v.fs, cpath, cattr,
-			unsafe.Pointer(&dest[0]), C.size_t(len(dest)))
-	}
-
-	if ret >= 0 {
-		return int64(ret), nil
-	} else {
+		ret, err := C.glfs_getxattr(v.fs, cpath, cattr, nil, 0)
 		return int64(ret), err
 	}
+
+	// Allocate C memory for the buffer
+	cbuf := C.malloc(C.size_t(len(dest)))
+	if cbuf == nil {
+		return -1, fmt.Errorf("failed to allocate memory")
+	}
+	defer C.free(cbuf)
+
+	// Get the attribute value
+	ret, err := C.glfs_getxattr(v.fs, cpath, cattr, cbuf, C.size_t(len(dest)))
+	if ret < 0 {
+		return int64(ret), err
+	}
+
+	// Copy data from C buffer to Go slice
+	C.memcpy(unsafe.Pointer(&dest[0]), cbuf, C.size_t(ret))
+
+	return int64(ret), nil
 }
 
 // Setxattr Set extended attribute with key 'attr' and value 'data'
@@ -584,16 +600,16 @@ func (v *Volume) Removexattr(path string, attr string) error {
 //
 // int glfs_statvfs(glfs_t *fs, const char *path, struct statvfs *buf)
 // __THROW GFAPI_PUBLIC(glfs_statvfs, 3.4.0);
-func (v *Volume) Statvfs(path string) (buf *Statvfs_t, err error) {
-	cpath := C.CString(path)
-	defer C.free(unsafe.Pointer(cpath))
-
-	ret, err := C.glfs_statvfs(v.fs, cpath, (*C.struct_statvfs)(unsafe.Pointer(buf)))
-
-	if ret == 0 {
-		err = nil
-	}
-	return
+func (v *Volume) Statvfs(path string) (*Statvfs_t, error) {
+    cpath := C.CString(path)
+    defer C.free(unsafe.Pointer(cpath))
+    
+    buf := &Statvfs_t{}
+    ret, err := C.glfs_statvfs(v.fs, cpath, (*C.struct_statvfs)(unsafe.Pointer(buf)))
+    if int(ret) < 0 {
+        return nil, err
+    }
+    return buf, nil
 }
 
 // Access Check if you can read/write a file that already exists
@@ -680,13 +696,34 @@ func (v *Volume) Readlink(path string) (string, error) {
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))
 
-	var buf []byte
+	// Start with a reasonably sized buffer
+	bufSize := 128
+	for {
+		// Allocate C memory for the buffer
+		cbuf := C.malloc(C.size_t(bufSize))
+		if cbuf == nil {
+			return "", fmt.Errorf("failed to allocate memory")
+		}
+		defer C.free(cbuf)
 
-	ret, err := C.glfs_readlink(v.fs, cpath, unsafe.Pointer(&buf[0]), C.size_t(len(buf)))
-	if int(ret) < 0 {
-		return "", err
+		// Call glfs_readlink
+		ret, err := C.glfs_readlink(v.fs, cpath, cbuf, C.size_t(bufSize))
+		if int(ret) < 0 {
+			return "", err
+		}
+
+		// If buffer was large enough
+		if int(ret) < bufSize {
+			// Convert C buffer to Go string
+			return C.GoStringN(cbuf), nil
+		}
+
+		// Buffer was too small, double it and try again
+		bufSize *= 2
+		if bufSize > UnixMaxPathLen { // Prevent infinite growth
+			return "", fmt.Errorf("symbolic link too long")
+		}
 	}
-	return string(buf), nil
 }
 
 // Listxattr Get key list of the extended attribute
@@ -696,17 +733,30 @@ func (v *Volume) Readlink(path string) (string, error) {
 // ssize_t glfs_listxattr(glfs_t *fs, const char *path, void *value, size_t size)
 // __THROW GFAPI_PUBLIC(glfs_listxattr, 3.4.0);
 func (v *Volume) Listxattr(path string, dest []byte) (int64, error) {
-	var ret C.ssize_t
-	var err error
-
 	cpath := C.CString(path)
 	defer C.free(unsafe.Pointer(cpath))
 
+	// First get the size needed
 	if len(dest) <= 0 {
-		ret, err = C.glfs_listxattr(v.fs, cpath, nil, 0)
-	} else {
-		ret, err = C.glfs_listxattr(v.fs, cpath, unsafe.Pointer(&dest[0]), C.size_t(len(dest)))
+		ret, err := C.glfs_listxattr(v.fs, cpath, nil, 0)
+		return int64(ret), err
 	}
 
-	return int64(ret), err
+	// Allocate C memory for the buffer
+	cbuf := C.malloc(C.size_t(len(dest)))
+	if cbuf == nil {
+		return -1, fmt.Errorf("failed to allocate memory")
+	}
+	defer C.free(cbuf)
+
+	// Get the xattr list
+	ret, err := C.glfs_listxattr(v.fs, cpath, cbuf, C.size_t(len(dest)))
+	if ret < 0 {
+		return int64(ret), err
+	}
+
+	// Copy data from C buffer to Go slice
+	C.memcpy(unsafe.Pointer(&dest[0]), cbuf, C.size_t(ret))
+
+	return int64(ret), nil
 }
